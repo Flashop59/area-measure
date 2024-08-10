@@ -10,12 +10,8 @@ from geopy.distance import geodesic
 import requests
 from datetime import datetime, timedelta
 from streamlit_folium import folium_static
-import warnings
 
-# Suppress warnings
-warnings.filterwarnings("ignore")
-
-# Function to fetch data from the API for a single 24-hour period
+# Function to fetch data from the API
 def fetch_data(vehicle, start_time, end_time):
     API_KEY = "3330d953-7abc-4bac-b862-ac315c8e2387-6252fa58-d2c2-4c13-b23e-59cefafa4d7d"
     url = f"https://admintestapi.ensuresystem.in/api/locationpull/orbit?vehicle={vehicle}&from={start_time}&to={end_time}"
@@ -34,24 +30,6 @@ def fetch_data(vehicle, start_time, end_time):
     # Sort data by time
     data.sort(key=lambda x: x['time'])
     return data
-
-# Function to fetch data over a range of dates in 24-hour intervals
-def fetch_data_over_period(vehicle, start_date, end_date):
-    all_data = []
-    current_start = start_date
-
-    while current_start < end_date:
-        current_end = min(current_start + timedelta(days=1), end_date)
-        start_time_ms = int(current_start.timestamp() * 1000)
-        end_time_ms = int(current_end.timestamp() * 1000)
-        
-        data = fetch_data(vehicle, start_time_ms, end_time_ms)
-        if data:
-            all_data.extend(data)
-        
-        current_start = current_end
-    
-    return all_data
 
 # Function to calculate the area of a field in square meters using convex hull
 def calculate_convex_hull_area(points):
@@ -78,7 +56,7 @@ def process_data(data):
     
     # Cluster the GPS points to identify separate fields
     coords = gps_data[['lat', 'lng']].values
-    db = DBSCAN(eps=0.000092, min_samples=11).fit(coords)
+    db = DBSCAN(eps=0.00008, min_samples=11).fit(coords)
     labels = db.labels_
 
     # Add labels to the data
@@ -90,7 +68,7 @@ def process_data(data):
         lambda df: calculate_convex_hull_area(df[['lat', 'lng']].values))
 
     # Convert the area from square degrees to square meters (approximation)
-    field_areas_m2 = field_areas * 0.765 * (111000 ** 2)  # rough approximation
+    field_areas_m2 = field_areas * 0.77 * (111000 ** 2)  # rough approximation
 
     # Convert the area from square meters to gunthas (1 guntha = 101.17 m^2)
     field_areas_gunthas = field_areas_m2 / 101.17
@@ -163,6 +141,12 @@ def process_data(data):
         'Travel Time to Next Field (minutes)': travel_times
     })
     
+    # Calculate total metrics
+    total_area = field_areas_gunthas.sum()
+    total_time = field_times.sum()
+    total_travel_distance = np.nansum(travel_distances)
+    total_travel_time = np.nansum(travel_times)
+
     # Create a satellite map
     map_center = [gps_data['lat'].mean(), gps_data['lng'].mean()]
     m = folium.Map(location=map_center, zoom_start=12)
@@ -191,7 +175,7 @@ def process_data(data):
             fill_color=color
         ).add_to(m)
 
-    return m, combined_df
+    return m, combined_df, total_area, total_time, total_travel_distance, total_travel_time
 
 # Streamlit UI
 st.title("Field Area and Time Calculation from GPS Data")
@@ -208,38 +192,49 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-st.write("Enter vehicle details and select the date range to calculate field areas and visualize them on a satellite map.")
+st.write("Enter vehicle details and date range to calculate field areas and visualize them on a satellite map.")
 
 vehicle = st.text_input("Enter Vehicle ID (e.g., BR1):")
-start_date = st.date_input("Select Start Date:")
-end_date = st.date_input("Select End Date:")
+start_date = st.date_input("Select Start Date", value=datetime.now().date() - timedelta(days=1))
+end_date = st.date_input("Select End Date", value=datetime.now().date())
 
 if st.button("Fetch and Process Data"):
     if vehicle and start_date and end_date:
-        if start_date > end_date:
-            st.warning("Start date cannot be after end date.")
-        else:
-            # Set times to the start of the day and end of the day
-            start_datetime = datetime.combine(start_date, datetime.min.time())
-            end_datetime = datetime.combine(end_date, datetime.max.time())
-            
-            # Fetch data over the selected period
-            data = fetch_data_over_period(vehicle, start_datetime, end_datetime)
-            
+        # Convert dates to timestamps in milliseconds since epoch
+        start_time_ms = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
+        end_time_ms = int(datetime.combine(end_date, datetime.max.time()).timestamp() * 1000)
+
+        # Fetch data in 24-hour intervals and combine it
+        current_start_time = start_time_ms
+        combined_data = []
+        while current_start_time < end_time_ms:
+            current_end_time = min(current_start_time + 86400000, end_time_ms)  # 86400000 ms = 24 hours
+            data = fetch_data(vehicle, current_start_time, current_end_time)
             if data:
-                # Process the data and generate the map and DataFrame
-                map_obj, combined_df = process_data(data)
-                
-                # Display the map
-                st.subheader("Field Map")
-                folium_static(map_obj)
-                
-                # Display the DataFrame
-                st.subheader("Field Area and Time Data")
-                st.dataframe(combined_df)
-                
-                # Downloadable CSV of the DataFrame
-                csv = combined_df.to_csv(index=False).encode('utf-8')
-                st.download_button(label="Download CSV", data=csv, file_name=f'{vehicle}_field_data.csv', mime='text/csv')
+                combined_data.extend(data)
+            current_start_time = current_end_time
+
+        if combined_data:
+            # Process the data and generate the map and DataFrame
+            map_obj, combined_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(combined_data)
+            
+            # Display the map
+            st.subheader("Field Map")
+            folium_static(map_obj)
+            
+            # Display the DataFrame
+            st.subheader("Field Area and Time Data")
+            st.dataframe(combined_df)
+            
+            # Display total metrics
+            st.subheader("Total Metrics")
+            st.write(f"Total Area: {total_area:.2f} Gunthas")
+            st.write(f"Total Time: {total_time:.2f} Minutes")
+            st.write(f"Total Travel Distance: {total_travel_distance:.2f} km")
+            st.write(f"Total Travel Time: {total_travel_time:.2f} Minutes")
+            
+            # Downloadable CSV of the DataFrame
+            csv = combined_df.to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download CSV", data=csv, file_name=f'{vehicle}_field_data.csv', mime='text/csv')
     else:
         st.warning("Please enter all required fields.")
