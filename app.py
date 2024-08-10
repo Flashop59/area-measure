@@ -37,7 +37,9 @@ def calculate_convex_hull_area(points):
         return 0
     try:
         hull = ConvexHull(points)
+        print(points)
         poly = Polygon(points[hull.vertices])
+        print(poly)
         return poly.area  # Area in square degrees
     except Exception:
         return 0
