@@ -40,7 +40,7 @@ def process_data(data):
     fields = gps_data[gps_data['field_id'] != -1]
     field_areas = fields.groupby('field_id').apply(
         lambda df: calculate_convex_hull_area(df[['lat', 'lng']].values))
-    field_areas_m2 = field_areas * 0.77 * (111000 ** 2)
+    field_areas_m2 = field_areas * 0.67 * (111000 ** 2)
     field_areas_gunthas = field_areas_m2 / 101.17
     field_times = fields.groupby('field_id').apply(
         lambda df: (df['Timestamp'].max() - df['Timestamp'].min()).total_seconds() / 60.0)
